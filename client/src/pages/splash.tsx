@@ -7,10 +7,13 @@ export default function Splash() {
   const [isVisible, setIsVisible] = useState(true);
 
   useEffect(() => {
-    // Ensure complete state clearing during splash
+    // Clear chat/temporary state during splash. Note: match chat session
+    // keys by their 'session_' PREFIX - the old substring match also caught
+    // 'app_session_active', silently deleting the flag the root route uses
+    // to decide splash-vs-login on every launch.
     const keys = Object.keys(localStorage);
     keys.forEach(key => {
-      if (key.includes('chat') || key.includes('liveChat') || key.includes('tempState') || key.includes('session_')) {
+      if (key.includes('chat') || key.includes('liveChat') || key.includes('tempState') || key.startsWith('session_')) {
         localStorage.removeItem(key);
       }
     });

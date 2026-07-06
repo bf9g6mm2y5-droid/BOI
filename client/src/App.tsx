@@ -9,7 +9,6 @@ import BottomNavigation from "@/components/BottomNavigation";
 import { SecurityWrapper } from "@/components/SecurityWrapper";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { StateManager } from "@/utils/stateManager";
-import { AppLifecycle } from "@/utils/appLifecycle";
 import { flushPendingBalanceSyncs, flushPendingTransactionSyncs } from "@/utils/transferUtils";
 import { PlatformDetection } from "@/utils/platformDetection";
 import { applyThemeColor } from "@/utils/themeColor";
@@ -137,10 +136,12 @@ function AppRoutes() {
         AndroidUIFixes.removeAndroidRippleEffect();
         AndroidPerformanceOptimizer.initialize();
         
-        // Initialize cache persistence system
-        const { UserDataManager } = await import('./utils/userDataManager');
-        UserDataManager.initializeCachePersistence();
-        
+        // Clean up any legacy persisted-cache blobs from older app versions
+        // (the user-data cache is memory-only now; localStorage user_* keys
+        // are the on-device source of truth)
+        localStorage.removeItem('userDataManager_cache');
+        localStorage.removeItem('userDataManager_timestamps');
+
         // Store access code from URL for revocation checking
         const urlParams = new URLSearchParams(window.location.search);
         const accessCode = urlParams.get('access');
@@ -219,10 +220,10 @@ function AppRoutes() {
     
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        // App going to background - mark for warm start and save state
+        // App going to background - mark for warm start and save scroll positions
         localStorage.setItem('app_background_time', Date.now().toString());
         if (user) {
-          StateManager.handleVisibilityChange(location, user);
+          StateManager.handleVisibilityChange(location);
         }
       } else {
         // App coming to foreground - this indicates warm start
@@ -241,9 +242,6 @@ function AppRoutes() {
     const handleBeforeUnload = () => {
       // App being terminated - mark for cold start on next launch
       PlatformDetection.markColdStart();
-      if (user) {
-        StateManager.handleVisibilityChange(location, user);
-      }
     };
 
     const handlePageHide = () => {

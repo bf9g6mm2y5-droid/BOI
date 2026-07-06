@@ -180,6 +180,45 @@ export class OfflineAuthGuard {
   }
 
   /**
+   * Returns the customer number of the identity currently stored in the
+   * auth keys, or null if none/unreadable.
+   */
+  static getStoredCustomerNumber(): string | null {
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of [this.STORAGE_KEYS.USER, this.STORAGE_KEYS.USER_BACKUP, this.STORAGE_KEYS.SESSION_BACKUP]) {
+        try {
+          const data = storage.getItem(key);
+          if (data) {
+            const user = JSON.parse(data);
+            if (user && user.customerNumber) return String(user.customerNumber);
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Remove ONLY the stored identity (all bankingUser copies in both
+   * storages) without touching caches/IndexedDB. Used when a specific
+   * customer is permanently deleted, so their identity can't be restored
+   * as "logged in" on the next app launch.
+   */
+  static clearStoredIdentity() {
+    const identityKeys = [
+      this.STORAGE_KEYS.USER,
+      this.STORAGE_KEYS.USER_BACKUP,
+      this.STORAGE_KEYS.SESSION_BACKUP,
+    ];
+    identityKeys.forEach(key => {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    });
+  }
+
+  /**
    * Clear all user data (admin deletion only)
    */
   static clearAllUserData() {

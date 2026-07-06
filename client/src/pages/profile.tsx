@@ -1362,11 +1362,10 @@ export default function Profile() {
       }
     }));
     
-    // Force localStorage update for immediate persistence
-    const currentUser = UserDataManager.getCurrentUser();
-    if (currentUser) {
-      localStorage.setItem(`user_${currentUser}_bankAccounts`, JSON.stringify(updatedAccounts));
-    }
+    // Persist through UserDataManager so the in-memory cache stays in sync -
+    // writing the localStorage key directly here left the cache holding the
+    // old balance, so other screens kept showing the pre-edit value.
+    UserDataManager.setUserData('bankAccounts', updatedAccounts);
   };
 
   const addSampleTransactions = async (accountId: number, count: number, startDateStr: string = startDate, endDateStr: string = endDate) => {
@@ -1521,35 +1520,25 @@ export default function Profile() {
       balance: "0.00"
     }));
     
-    // Clear cache to ensure fresh data
-    UserDataManager.clearCache();
-    
-    // Clear all user data using UserDataManager
+    // Reset financial data through UserDataManager (single write path keeps
+    // localStorage and the in-memory cache in agreement). Auth/session data
+    // is untouched, and bankAccounts keeps its structure with zeroed
+    // balances. The old version wrote these empty arrays and then deleted
+    // the same keys it had just written, with cache clears sprinkled in -
+    // three mechanisms fighting over the same state.
     UserDataManager.setUserAccounts(resetAccounts);
     UserDataManager.setUserData('bankTransactions', []);
     UserDataManager.setUserData('savedPayees', []);
     UserDataManager.setUserData('recentPayees', []);
-    
-    // Only clear user financial data, preserve authentication and session data
-    const currentUser = UserDataManager.getCurrentUser();
-    if (currentUser) {
-      // Clear only account balances and transaction history - not auth data
-      localStorage.removeItem(`user_${currentUser}_bankTransactions`);
-      localStorage.removeItem(`user_${currentUser}_savedPayees`);
-      localStorage.removeItem(`user_${currentUser}_recentPayees`);
-      // Note: keeping bankAccounts to preserve account structure
-    }
-    // Clear legacy financial data only
+
+    // Clear legacy (pre-per-user-namespacing) financial data only
     localStorage.removeItem('bankTransactions');
     localStorage.removeItem('savedPayees');
     localStorage.removeItem('recentPayees');
     // Note: not clearing 'bankAccounts', 'bankingUser', 'currentUser', 'lastActiveUser'
-    
+
     // Update local state immediately
     setAccounts(resetAccounts);
-    
-    // Clear cache again after setting new data
-    UserDataManager.clearCache();
     
     // Clear all transactions from PostgreSQL database
     try {

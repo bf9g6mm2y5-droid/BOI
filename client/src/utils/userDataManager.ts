@@ -1,5 +1,16 @@
 // User Data Management System
-// Handles isolated data storage for each user account
+// Handles isolated data storage for each user account.
+//
+// Storage model: localStorage `user_<customerNumber>_<key>` entries are the
+// single source of truth on the device; `dataCache` is a plain in-memory
+// read-through mirror of those entries and is NEVER persisted itself. (An
+// earlier version also serialized the whole cache into
+// `userDataManager_cache` localStorage blobs on a 30s interval - that stored
+// a second copy of every user's data under a key that per-user wipes didn't
+// match, so deleted/stale data could be resurrected into the cache on the
+// next launch. That system was removed; keep the cache memory-only.)
+
+import { OfflineAuthGuard } from './offlineAuthGuard';
 
 export interface UserData {
   customerNumber: string;
@@ -17,17 +28,30 @@ export interface UserData {
 export class UserDataManager {
   private static currentUser: string | null = null;
   private static dataCache: Map<string, any> = new Map();
-  private static cacheTimestamps: Map<string, number> = new Map();
-  private static readonly CACHE_DURATION = null; // No cache expiration - permanent storage
-  private static readonly CACHE_STORAGE_KEY = 'userDataManager_cache';
-  private static readonly CACHE_TIMESTAMPS_KEY = 'userDataManager_timestamps';
 
   // Set the current active user
   static setCurrentUser(customerNumber: string) {
+    // Drop any other user's entries from the in-memory cache when the
+    // active user changes - reads are already namespaced per user, but
+    // there's no reason to keep another account's data in memory.
+    if (this.currentUser && this.currentUser !== customerNumber) {
+      this.evictUserFromCache(this.currentUser);
+    }
+
     this.currentUser = customerNumber;
     localStorage.setItem('currentUser', customerNumber);
     // Also store as last active user for biometric authentication
     this.setLastActiveUser(customerNumber);
+  }
+
+  // Remove all in-memory cache entries belonging to one user
+  private static evictUserFromCache(customerNumber: string) {
+    const prefix = `${customerNumber}_`;
+    Array.from(this.dataCache.keys()).forEach(key => {
+      if (key.startsWith(prefix)) {
+        this.dataCache.delete(key);
+      }
+    });
   }
 
   // Get the current active user
@@ -102,18 +126,23 @@ export class UserDataManager {
     return `user_${currentUser}_${key}`;
   }
 
-  // Store user-specific data
+  // Store user-specific data. Safe no-op (with a warning) when no user is
+  // logged in - previously this threw an uncaught error from getUserKey(),
+  // crashing whichever flow tried to write during login/logout transitions.
   static setUserData(key: string, data: any) {
-    const userKey = this.getUserKey(key);
-    localStorage.setItem(userKey, JSON.stringify(data));
+    const currentUser = this.getCurrentUser();
+    if (!currentUser) {
+      console.warn(`setUserData('${key}') ignored - no user is currently logged in`);
+      return;
+    }
+
+    localStorage.setItem(`user_${currentUser}_${key}`, JSON.stringify(data));
 
     // Keep the in-memory cache in sync so a subsequent getUserData() call
     // (e.g. balance re-read on another page) doesn't return a stale cached
     // value from before this write - this was the cause of balances
     // appearing to "glitch"/revert after a transfer.
-    const cacheKey = `${this.getCurrentUser()}_${key}`;
-    this.dataCache.set(cacheKey, data);
-    this.cacheTimestamps.set(cacheKey, Date.now());
+    this.dataCache.set(`${currentUser}_${key}`, data);
   }
 
   // Retrieve user-specific data with caching
@@ -121,52 +150,36 @@ export class UserDataManager {
     try {
       const userKey = this.getUserKey(key);
       const cacheKey = `${this.getCurrentUser()}_${key}`;
-      
-      // Check cache first - no expiration since CACHE_DURATION is null
+
       const cachedData = this.dataCache.get(cacheKey);
-      
       if (cachedData !== undefined) {
         return cachedData;
       }
-      
+
       // Get from localStorage
       const stored = localStorage.getItem(userKey);
       const data = stored ? JSON.parse(stored) : defaultValue;
-      
+
       // Cache the result
       this.dataCache.set(cacheKey, data);
-      this.cacheTimestamps.set(cacheKey, Date.now());
-      
+
       return data;
     } catch (error) {
       return defaultValue;
     }
   }
 
-  // Clear cache for specific user data - PROTECTED (preserve in localStorage)
+  // Drop in-memory cache entries so the next read comes from localStorage.
+  // Data itself is untouched - localStorage remains the source of truth.
   static clearCache(key?: string) {
     const currentUser = this.getCurrentUser();
     if (!currentUser) return;
 
-    // Save to localStorage before clearing memory cache
-    this.saveCacheToStorage();
-
     if (key) {
-      const cacheKey = `${currentUser}_${key}`;
-      this.dataCache.delete(cacheKey);
-      this.cacheTimestamps.delete(cacheKey);
+      this.dataCache.delete(`${currentUser}_${key}`);
     } else {
-      // Clear all cache entries for current user (memory only)
-      const userPrefix = `${currentUser}_`;
-      this.dataCache.forEach((value, key) => {
-        if (key.startsWith(userPrefix)) {
-          this.dataCache.delete(key);
-          this.cacheTimestamps.delete(key);
-        }
-      });
+      this.evictUserFromCache(currentUser);
     }
-    
-    console.log('Memory cache cleared but data preserved in localStorage');
   }
 
   // Get all registered users
@@ -450,6 +463,16 @@ export class UserDataManager {
         localStorage.removeItem('currentUser');
         localStorage.removeItem('lastActiveUser');
       }
+
+      // CRITICAL: also clear the stored auth identity if it belongs to the
+      // wiped customer. The bankingUser/backup keys hold the customer number
+      // inside their JSON *value*, not the key name, so the key-name matching
+      // above never removed them - which meant a permanently deleted user was
+      // restored as "logged in" on the next launch, only to be wiped and
+      // redirected again by the next heartbeat, in a loop.
+      if (OfflineAuthGuard.getStoredCustomerNumber() === customerNumber) {
+        OfflineAuthGuard.clearStoredIdentity();
+      }
       
       // Clear session storage
       if (typeof sessionStorage !== 'undefined') {
@@ -485,8 +508,12 @@ export class UserDataManager {
       
       // Clear in-memory cache
       this.dataCache.clear();
-      this.cacheTimestamps.clear();
-      
+
+      // Remove the legacy persisted-cache blobs if they exist from an older
+      // version of the app - they held a second copy of every user's data.
+      localStorage.removeItem('userDataManager_cache');
+      localStorage.removeItem('userDataManager_timestamps');
+
       console.log(`🔥 User ${customerNumber} data completely wiped`);
     } catch (e) {
       console.error('Error during permanent wipe:', e);
@@ -495,13 +522,9 @@ export class UserDataManager {
 
   // Clear temporary state for cold launch - PROTECTED
   static clearTemporaryState() {
-    // Preserve cache in localStorage before clearing in-memory
-    this.saveCacheToStorage();
-    
     // Only clear in-memory cache - data persists in localStorage
     this.dataCache.clear();
-    this.cacheTimestamps.clear();
-    
+
     // Only clear truly temporary debug items - preserve user data
     const keys = Object.keys(localStorage);
     keys.forEach(key => {
@@ -509,49 +532,8 @@ export class UserDataManager {
         localStorage.removeItem(key);
       }
     });
-    
+
     // Preserve all user session and authentication data
-  }
-
-  // Save cache to localStorage for persistence across reloads
-  private static saveCacheToStorage() {
-    try {
-      const cacheData = Object.fromEntries(this.dataCache.entries());
-      const timestampData = Object.fromEntries(this.cacheTimestamps.entries());
-      
-      localStorage.setItem(this.CACHE_STORAGE_KEY, JSON.stringify(cacheData));
-      localStorage.setItem(this.CACHE_TIMESTAMPS_KEY, JSON.stringify(timestampData));
-    } catch (error) {
-      console.error('Failed to save cache to storage:', error);
-    }
-  }
-
-  // Restore cache from localStorage on initialization
-  private static restoreCacheFromStorage() {
-    try {
-      const cacheData = localStorage.getItem(this.CACHE_STORAGE_KEY);
-      const timestampData = localStorage.getItem(this.CACHE_TIMESTAMPS_KEY);
-      
-      if (cacheData) {
-        const parsedCache = JSON.parse(cacheData);
-        this.dataCache = new Map(Object.entries(parsedCache));
-      }
-      
-      if (timestampData) {
-        const parsedTimestamps = JSON.parse(timestampData);
-        this.cacheTimestamps = new Map(Object.entries(parsedTimestamps).map(([k, v]) => [k, Number(v)]));
-      }
-    } catch (error) {
-      console.error('Failed to restore cache from storage:', error);
-    }
-  }
-
-  // Initialize cache persistence
-  static initializeCachePersistence() {
-    this.restoreCacheFromStorage();
-    
-    // Save cache periodically and on important operations
-    setInterval(() => this.saveCacheToStorage(), 30000); // Every 30 seconds
   }
 
   // Admin function to clear all data - PROTECTED (admin-only)
@@ -594,9 +576,8 @@ export class UserDataManager {
       localStorage.removeItem('lastActiveUser');
     }
     
-    // Clear any cached data for this user
-    this.dataCache.delete(customerNumber);
-    this.cacheTimestamps.delete(customerNumber);
+    // Clear any cached data for this user (cache keys are `${customerNumber}_${key}`)
+    this.evictUserFromCache(customerNumber);
     
     // Clear all user-specific localStorage entries
     const allKeys = Object.keys(localStorage);
