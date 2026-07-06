@@ -35,18 +35,6 @@ export function SecurityWrapper({ children }: SecurityWrapperProps) {
       e.preventDefault();
     };
 
-    // Override share API safely
-    try {
-      if ('share' in navigator) {
-        Object.defineProperty(navigator, 'share', {
-          value: () => Promise.reject(new Error('Sharing disabled')),
-          writable: false
-        });
-      }
-    } catch (e) {
-      // Silently handle if we can't override
-    }
-
     // Add event listeners
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('contextmenu', handleContextMenu);

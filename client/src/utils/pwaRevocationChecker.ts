@@ -7,22 +7,18 @@ let revocationCheckInterval: NodeJS.Timeout | null = null;
 
 /**
  * Starts aggressive revocation checking for PWA installations
+ *
+ * DISABLED: Access code revocation checking was removed - only admin deletion
+ * (via heartbeat checkCustomerExists) should trigger logout, and access code
+ * issues should NOT log out existing users. This used to run an empty
+ * setInterval every 10 seconds forever for no effect; kept as a no-op so
+ * existing call sites don't need to change.
  */
 export function startPWARevocationChecker(): void {
   if (revocationCheckInterval) {
     clearInterval(revocationCheckInterval);
+    revocationCheckInterval = null;
   }
-
-  console.log('🔴 Starting aggressive revocation checker - checking every 10 seconds');
-  
-  // DISABLED: Access code revocation checking removed
-  // Only admin deletion (via heartbeat checkCustomerExists) should trigger logout
-  // Access code issues should NOT log out existing users
-  
-  revocationCheckInterval = setInterval(async () => {
-    // Revocation checks disabled - users only logout on admin deletion
-    console.log('⚠️ PWA revocation checks disabled - heartbeat handles all logout logic');
-  }, 10000); // Every 10 seconds
 }
 
 /**

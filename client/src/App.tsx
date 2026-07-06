@@ -48,30 +48,25 @@ function ProtectedRoute({ children, fallback }: { children: React.ReactNode; fal
   const isLoading = authHook?.isLoading || false;
   const [initializationComplete, setInitializationComplete] = useState(false);
   
-  // Check initialization status
+  // Check initialization status - re-checks immediately on mount/when user
+  // changes, and once more when splash finishes (the 'splashComplete' event
+  // fires exactly when splash_completed flips true). Previously this polled
+  // localStorage every 100ms forever, which had no effect beyond what these
+  // two triggers already cover.
   useEffect(() => {
-    let initCheckInterval: NodeJS.Timeout;
-    
     const checkInitialization = () => {
       const appSessionActive = localStorage.getItem('app_session_active');
       const splashCompleted = localStorage.getItem('splash_completed');
-      
+
       // Mark as initialized if both conditions are met OR if we have a user
       if ((appSessionActive && splashCompleted) || user) {
         setInitializationComplete(true);
-        if (initCheckInterval) {
-          clearInterval(initCheckInterval);
-        }
       }
     };
-    
-    // Check initialization immediately and then periodically
+
     checkInitialization();
-    initCheckInterval = setInterval(checkInitialization, 100);
-    
-    return () => {
-      if (initCheckInterval) clearInterval(initCheckInterval);
-    };
+    window.addEventListener('splashComplete', checkInitialization);
+    return () => window.removeEventListener('splashComplete', checkInitialization);
   }, [user]);
   
   // Show loading screen during initialization

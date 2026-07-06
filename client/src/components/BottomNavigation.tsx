@@ -21,16 +21,14 @@ export default function BottomNavigation() {
     // Check immediately
     checkSplashState();
 
-    // Monitor DOM changes and route changes
+    // Monitor DOM changes (splash element added/removed) - route changes are
+    // already covered by the [location] dependency re-running this effect,
+    // so no extra polling interval is needed on top of this.
     const observer = new MutationObserver(checkSplashState);
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // Check on route changes
-    const interval = setInterval(checkSplashState, 100);
-
     return () => {
       observer.disconnect();
-      clearInterval(interval);
     };
   }, [location]);
 

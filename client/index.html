@@ -256,13 +256,6 @@
           }, 100);
         }
 
-        // Prevent sharing via Web Share API detection
-        if ('share' in navigator) {
-          // Override the share function
-          navigator.share = function() {
-            return Promise.reject(new Error('Sharing is disabled for security reasons'));
-          };
-        }
       });
 
       // Developer tools detection removed - was causing form interference
@@ -511,32 +504,6 @@
           }, 1000);
         }
       });
-
-      // Prevent URL visibility in sharing menus
-      if ('navigator' in window && 'share' in navigator) {
-        // Override Web Share API completely
-        Object.defineProperty(navigator, 'share', {
-          value: function() {
-            return Promise.reject(new Error('Sharing disabled for security'));
-          },
-          writable: false,
-          configurable: false
-        });
-      }
-
-      // Block clipboard operations
-      if ('navigator' in window && 'clipboard' in navigator) {
-        Object.defineProperty(navigator, 'clipboard', {
-          value: {
-            writeText: () => Promise.reject(new Error('Clipboard disabled')),
-            readText: () => Promise.reject(new Error('Clipboard disabled')),
-            write: () => Promise.reject(new Error('Clipboard disabled')),
-            read: () => Promise.reject(new Error('Clipboard disabled'))
-          },
-          writable: false,
-          configurable: false
-        });
-      }
 
       // Access control system
       async function checkAccess() {
