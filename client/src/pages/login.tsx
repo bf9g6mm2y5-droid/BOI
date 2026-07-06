@@ -9,6 +9,7 @@ import { User, ExternalLink, HelpCircle, Phone, Settings, Shield, MapPin, MoreHo
 import { UserDataManager } from "@/utils/userDataManager";
 import { getUserCurrency } from "@/utils/currencyUtils";
 import { promptNotificationsAtCreation } from "@/utils/notifications";
+import { applyThemeColor } from "@/utils/themeColor";
 import ukLogoPath from "@assets/IMG_1505_1759859367310.png";
 import faceIdIconPath from "@assets/IMG_1506_1759859583184.png";
 
@@ -69,8 +70,7 @@ export default function Login() {
   
   useEffect(() => {
     // Ensure theme-color is set for main app screens
-    const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeColorMeta) themeColorMeta.setAttribute('content', '#126987');
+    applyThemeColor();
   }, []);
 
   const locationHook = useLocation();

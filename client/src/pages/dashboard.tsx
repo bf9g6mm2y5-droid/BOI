@@ -7,6 +7,7 @@ import { UserDataManager } from "../utils/userDataManager";
 import { getPendingBalanceSyncs } from "../utils/transferUtils";
 import { StateManager } from "../utils/stateManager";
 import { formatCurrency, getUserCurrency, type Currency } from "../utils/currencyUtils";
+import { applyThemeColor } from "../utils/themeColor";
 import ukLogoPath from "@assets/IMG_1505_1759859367310.png";
 
 interface Account {
@@ -49,8 +50,7 @@ export default function Dashboard() {
   
   useEffect(() => {
     // Ensure theme-color is correct for the main app
-    const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeColorMeta) themeColorMeta.setAttribute('content', '#126987');
+    applyThemeColor();
   }, []);
 
   // Touch-safe interaction state

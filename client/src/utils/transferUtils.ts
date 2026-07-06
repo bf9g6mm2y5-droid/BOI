@@ -165,6 +165,83 @@ export const getPendingBalanceSyncs = (): Record<string, string> => {
   return map;
 };
 
+const PENDING_TRANSACTION_SYNCS_KEY = 'pendingTransactionSyncs';
+
+interface PendingTransactionSync {
+  accountId: number;
+  transaction: Transaction;
+}
+
+// Persists a transfer's transaction record (recipient, reference, etc.) to the
+// server so it survives a device switch or a cleared browser - previously only
+// the resulting balance was synced via syncBalanceToServer, so the balance was
+// correct on another device but its transaction history was missing entirely.
+// skipBalanceUpdate is always sent here since syncBalanceToServer already pushes
+// the authoritative new balance separately - applying this transaction's amount
+// again server-side would double-count it.
+export const syncTransactionToServer = (accountId: number, transaction: Transaction): void => {
+  const doSync = () =>
+    fetch('/api/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        accountId,
+        amount: transaction.amount,
+        description: transaction.description,
+        category: transaction.category,
+        type: transaction.type,
+        paymentMethod: transaction.paymentMethod,
+        reference: transaction.reference,
+        recipientName: transaction.recipientName,
+        iban: transaction.iban,
+        bicCode: transaction.bicCode,
+        recipientAccountNumber: transaction.recipientAccountNumber,
+        recipientSortCode: transaction.recipientSortCode,
+        recipientIban: transaction.recipientIban,
+        exchangeRate: transaction.exchangeRate,
+        convertedAmount: transaction.convertedAmount,
+        convertedCurrency: transaction.convertedCurrency,
+        timestamp: transaction.timestamp,
+        skipBalanceUpdate: true,
+      }),
+    });
+
+  const removeFromQueue = () => {
+    const pending: PendingTransactionSync[] = JSON.parse(localStorage.getItem(PENDING_TRANSACTION_SYNCS_KEY) || '[]');
+    const remaining = pending.filter(p => p.transaction.id !== transaction.id);
+    localStorage.setItem(PENDING_TRANSACTION_SYNCS_KEY, JSON.stringify(remaining));
+  };
+
+  const queueForRetry = () => {
+    const pending: PendingTransactionSync[] = JSON.parse(localStorage.getItem(PENDING_TRANSACTION_SYNCS_KEY) || '[]');
+    if (pending.some(p => p.transaction.id === transaction.id)) return;
+    pending.push({ accountId, transaction });
+    localStorage.setItem(PENDING_TRANSACTION_SYNCS_KEY, JSON.stringify(pending));
+  };
+
+  doSync()
+    .then(res => {
+      if (res.ok) {
+        console.log('📝 Transaction synced to server', transaction.id);
+        removeFromQueue();
+      } else {
+        throw new Error(`Server returned ${res.status}`);
+      }
+    })
+    .catch(() => {
+      console.warn('⚠️ Transaction sync failed - queuing for when online');
+      queueForRetry();
+    });
+};
+
+export const flushPendingTransactionSyncs = (): void => {
+  const pending: PendingTransactionSync[] = JSON.parse(localStorage.getItem(PENDING_TRANSACTION_SYNCS_KEY) || '[]');
+  if (pending.length === 0) return;
+  console.log(`🔄 Flushing ${pending.length} pending transaction sync(s)...`);
+  pending.forEach(({ accountId, transaction }) => syncTransactionToServer(accountId, transaction));
+};
+
 export const processTransfer = (
   fromAccountId: string,
   amount: number,
@@ -304,6 +381,9 @@ export const processTransfer = (
   
   // Update balance in database (background) - queue if offline
   syncBalanceToServer(fromAccountId, newBalance);
+
+  // Persist the transaction record itself (background) - queue if offline
+  syncTransactionToServer(parseInt(fromAccountId), newTransaction);
 
   // ✅ TRANSFER COMPLETED SUCCESSFULLY - NOW SEND EMAIL CONFIRMATION
   console.log('🔵 TRANSFER COMPLETED - Starting email confirmation process');

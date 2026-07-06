@@ -106,6 +106,14 @@ export class UserDataManager {
   static setUserData(key: string, data: any) {
     const userKey = this.getUserKey(key);
     localStorage.setItem(userKey, JSON.stringify(data));
+
+    // Keep the in-memory cache in sync so a subsequent getUserData() call
+    // (e.g. balance re-read on another page) doesn't return a stale cached
+    // value from before this write - this was the cause of balances
+    // appearing to "glitch"/revert after a transfer.
+    const cacheKey = `${this.getCurrentUser()}_${key}`;
+    this.dataCache.set(cacheKey, data);
+    this.cacheTimestamps.set(cacheKey, Date.now());
   }
 
   // Retrieve user-specific data with caching

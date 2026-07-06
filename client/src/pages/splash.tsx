@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { APP_THEME_COLOR, SPLASH_THEME_COLOR } from "@/utils/themeColor";
 
 export default function Splash() {
   const [, navigate] = useLocation();
@@ -16,13 +17,13 @@ export default function Splash() {
     
     // Add splash-specific full screen class for iOS PWA
     document.body.classList.add('splash-fullscreen');
-    document.documentElement.style.setProperty('--status-bar-color', '#000DFF');
+    document.documentElement.style.setProperty('--status-bar-color', SPLASH_THEME_COLOR);
     
     // Comprehensive theme color update for splash screen
     const updateThemeColor = () => {
       const themeColorMeta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement;
       if (themeColorMeta) {
-        themeColorMeta.content = '#000DFF';
+        themeColorMeta.content = SPLASH_THEME_COLOR;
       }
       
       // Create or update additional iOS-specific status bar configuration
@@ -34,7 +35,7 @@ export default function Splash() {
       // Force PWA status bar color update
       if ('setAppBadge' in navigator) {
         // PWA-specific color updates
-        document.body.style.backgroundColor = '#000DFF';
+        document.body.style.backgroundColor = SPLASH_THEME_COLOR;
         setTimeout(() => {
           document.body.style.backgroundColor = '';
         }, 100);
@@ -56,7 +57,7 @@ export default function Splash() {
       // Force status bar transition BEFORE navigation
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute('content', '#126987');
+        themeColorMeta.setAttribute('content', APP_THEME_COLOR);
       }
       
       // Dispatch event to notify App.tsx that splash is complete
@@ -74,7 +75,7 @@ export default function Splash() {
       document.documentElement.style.removeProperty('--status-bar-color');
       // Restore theme-color for main app
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-      if (themeColorMeta) themeColorMeta.setAttribute('content', '#126987');
+      if (themeColorMeta) themeColorMeta.setAttribute('content', APP_THEME_COLOR);
     };
   }, [navigate]);
 
@@ -99,7 +100,7 @@ export default function Splash() {
         pointerEvents: 'none',
         opacity: 1,
         visibility: 'visible',
-        backgroundColor: '#000DFF'
+        backgroundColor: SPLASH_THEME_COLOR
       }}
       onClick={handleInteraction}
       onTouchStart={handleInteraction}

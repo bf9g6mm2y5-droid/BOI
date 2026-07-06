@@ -7,7 +7,7 @@ import { otcService } from "./otcService";
 import { transferSecurityService } from "./security/transferSecurity";
 import { generateChatResponse } from "./openai";
 import { isDeviceBlocked, addDeviceSession, isDeviceInPanicMode, isCustomerInPanicMode } from "./deviceSessions";
-import { isAccountActiveOnOtherDevice, setUserDeviceSession, removeUserDeviceSession, getUserDeviceSession, isCurrentDeviceAuthorized } from "./deviceExclusiveAuth";
+import { setUserDeviceSession } from "./deviceExclusiveAuth";
 import { addUserSession, removeUserSession, sessionTrackingMiddleware, isSessionValid } from "./sessionManager";
 import { sendTransferConfirmation, sendBankStatement, type TransferConfirmationDetails } from "./emailService";
 import { generateTransferConfirmationPDF } from "./pdfService";
@@ -911,14 +911,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         deviceModel = 'Web Browser';
       }
 
-      // Check if this device is authorized for this account
-      if (!isCurrentDeviceAuthorized(user.id, userAgent)) {
-        const existingSession = getUserDeviceSession(user.id);
-        console.log(`🚫 UNAUTHORIZED DEVICE: User ${user.id} attempted login from ${deviceModel}, but account is permanently locked to ${existingSession?.deviceModel}`);
-        return res.status(403).json({ 
-          message: "This account is already active on another device." 
-        });
-      }
+      // DISABLED: Permanently locking an account to its first device blocked
+      // legitimate logins whenever a customer moved to a new phone - the lock
+      // was also only ever held in memory (never persisted), so it reset
+      // unpredictably on every server restart, making the lockout feel random.
+      // We still record the device session below for admin oversight, but no
+      // longer reject login when the device doesn't match.
+      // if (!isCurrentDeviceAuthorized(user.id, userAgent)) {
+      //   const existingSession = getUserDeviceSession(user.id);
+      //   console.log(`🚫 UNAUTHORIZED DEVICE: User ${user.id} attempted login from ${deviceModel}, but account is permanently locked to ${existingSession?.deviceModel}`);
+      //   return res.status(403).json({
+      //     message: "This account is already active on another device."
+      //   });
+      // }
 
       // DISABLED: Panic mode should not prevent initial login
       // Panic mode is enforced via heartbeat, not at login
@@ -1330,7 +1335,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Not authenticated" });
       }
 
-      const { accountId, amount, description, category, type, timestamp, paymentMethod } = req.body;
+      const {
+        accountId, amount, description, category, type, timestamp, paymentMethod,
+        reference, recipientName, iban, bicCode, recipientAccountNumber,
+        recipientSortCode, recipientIban, exchangeRate, convertedAmount, convertedCurrency,
+        // The transfer flows (UK/IBAN/email/internal) already sync the account's
+        // resulting balance separately via PUT /api/accounts/:id/balance - when
+        // they also record the transaction here, they pass this flag so we don't
+        // apply the amount to the balance a second time.
+        skipBalanceUpdate
+      } = req.body;
 
       if (!accountId || amount === undefined || !description || !category || !type) {
         return res.status(400).json({ message: "Missing required fields" });
@@ -1359,31 +1373,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         type,
         paymentMethod: paymentMethod || (type === 'credit' ? 'Deposit' : 'Purchase'),
         timestamp: timestamp ? new Date(timestamp) : new Date(),
-        reference: null,
-        recipientName: null,
-        iban: null,
-        bicCode: null,
-        recipientAccountNumber: null,
-        recipientSortCode: null,
-        recipientIban: null,
-        exchangeRate: null,
-        convertedAmount: null,
-        convertedCurrency: null
+        reference: reference || null,
+        recipientName: recipientName || null,
+        iban: iban || null,
+        bicCode: bicCode || null,
+        recipientAccountNumber: recipientAccountNumber || null,
+        recipientSortCode: recipientSortCode || null,
+        recipientIban: recipientIban || null,
+        exchangeRate: exchangeRate || null,
+        convertedAmount: convertedAmount || null,
+        convertedCurrency: convertedCurrency || null
       });
 
-      // Update the account balance
-      const currentBalance = parseFloat(account.balance);
-      const balanceChange = type === 'credit' ? Math.abs(numericAmount) : -Math.abs(numericAmount);
-      const newBalance = (currentBalance + balanceChange).toFixed(2);
-      
-      await storage.updateAccountBalance(accountId, newBalance);
+      let newBalance = account.balance;
+      if (!skipBalanceUpdate) {
+        // Update the account balance
+        const currentBalance = parseFloat(account.balance);
+        const balanceChange = type === 'credit' ? Math.abs(numericAmount) : -Math.abs(numericAmount);
+        newBalance = (currentBalance + balanceChange).toFixed(2);
 
-      console.log(`💳 Sample transaction created: ${description}, Amount: ${amountStr}, New Balance: ${newBalance}`);
+        await storage.updateAccountBalance(accountId, newBalance);
+      }
 
-      res.json({ 
-        success: true, 
+      console.log(`💳 Transaction recorded: ${description}, Amount: ${amountStr}, New Balance: ${newBalance}`);
+
+      res.json({
+        success: true,
         transaction,
-        newBalance 
+        newBalance
       });
     } catch (error) {
       console.error('Error creating transaction:', error);

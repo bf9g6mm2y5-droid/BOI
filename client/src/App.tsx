@@ -10,8 +10,9 @@ import { SecurityWrapper } from "@/components/SecurityWrapper";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { StateManager } from "@/utils/stateManager";
 import { AppLifecycle } from "@/utils/appLifecycle";
-import { flushPendingBalanceSyncs } from "@/utils/transferUtils";
+import { flushPendingBalanceSyncs, flushPendingTransactionSyncs } from "@/utils/transferUtils";
 import { PlatformDetection } from "@/utils/platformDetection";
+import { applyThemeColor } from "@/utils/themeColor";
 import LiveChat from "@/components/LiveChat";
 
 
@@ -102,9 +103,7 @@ function ProtectedRoute({ children, fallback }: { children: React.ReactNode; fal
 function AppRoutes() {
   const authHook = useAuth();
   const user = authHook?.user || null;
-  const isLoading = authHook?.isLoading || false;
-  const login = authHook?.login || (() => {});
-  
+
   const locationHook = useLocation();
   const [location, navigate] = locationHook || ['/', () => {}];
   const [splashShown, setSplashShown] = useState(false);
@@ -125,15 +124,6 @@ function AppRoutes() {
     return () => window.removeEventListener('openLiveChat', handleOpenLiveChat);
   }, []);
 
-  // Centralized theme color management
-  const updateThemeColor = (color: string) => {
-    const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeColorMeta) {
-      themeColorMeta.setAttribute('content', color);
-    }
-  };
-
-  
   // Initialize app state with proper cold/warm start detection
   useEffect(() => {
     let initializationTimer: NodeJS.Timeout;
@@ -173,76 +163,24 @@ function AppRoutes() {
         console.log('Starting enhanced revocation checker for all devices');
         startPWARevocationChecker();
         
-        // Use platform detection for accurate cold/warm start determination
-        const startType = PlatformDetection.getCurrentStartType();
-        const isColdStart = startType === 'cold' || startType === 'uncertain';
-        
-        if (isColdStart) {
-          console.log('Cold start detected - showing splash sequence');
-          
-          setSplashShown(false);
-          localStorage.removeItem('splash_completed');
-          localStorage.removeItem('app_background_time');
-          localStorage.setItem('app_session_active', 'true');
-          localStorage.setItem('cold_start_active', 'true');
-          
-        } else if (startType === 'warm') {
-          // WARM START: App was backgrounded - restore exactly where user left off
-          console.log('Warm start detected - restoring previous state');
-          
-          localStorage.removeItem('app_background_time');
-          
-          try {
-            const savedState = StateManager.restoreAppState(false);
-            
-            if (savedState && savedState.user && !user && !isLoading) {
-              // Delay to coordinate with auth context
-              setTimeout(() => {
-                if (!user) {
-                  login(savedState.user);
-                  
-                  // Restore exact route for warm start
-                  if (savedState.currentRoute && savedState.currentRoute !== '/login' && savedState.currentRoute !== '/splash') {
-                    navigate(savedState.currentRoute);
-                  }
-                }
-              }, 200);
-              
-              // Skip splash entirely for warm starts
-              setSplashShown(true);
-              localStorage.setItem('splash_completed', 'true');
-            } else {
-              // No valid saved state - fallback to cold start behavior
-              setSplashShown(false);
-              localStorage.removeItem('splash_completed');
-            }
-          } catch (error) {
-            console.error('Failed to restore warm start state:', error);
-            // Fallback to cold start behavior
-            setSplashShown(false);
-            localStorage.removeItem('splash_completed');
-          }
-          
-        } else {
-          console.log('Uncertain state - defaulting to cold start behavior');
-          setSplashShown(false);
-          localStorage.removeItem('splash_completed');
-          localStorage.setItem('app_session_active', 'true');
-          
-          // Try to restore user session
-          try {
-            const savedState = StateManager.restoreAppState(true);
-            if (savedState && savedState.user && !user) {
-              setTimeout(() => {
-                if (!user) {
-                  login(savedState.user);
-                }
-              }, 200);
-            }
-          } catch (error) {
-            console.error('Failed to restore user session:', error);
-          }
-        }
+        // Every real app start (the JS runtime actually (re)initializing,
+        // whether the OS calls that "cold" or "warm") always goes through
+        // splash then the login screen - the user authenticates explicitly
+        // (Face ID hold or PIN) from there, even though their session is
+        // still valid underneath. Previously "warm start" silently restored
+        // the user and jumped straight to whatever route they'd left,
+        // racing against this same screen's own user-based redirect and
+        // producing a visible splash -> dashboard -> login bounce. Login
+        // itself remains untouched by backgrounding the app briefly, since
+        // that case never remounts this component at all (handled by the
+        // visibilitychange listener below instead).
+        console.log('App (re)initializing - showing splash sequence');
+
+        setSplashShown(false);
+        localStorage.removeItem('splash_completed');
+        localStorage.removeItem('app_background_time');
+        localStorage.setItem('app_session_active', 'true');
+        localStorage.setItem('cold_start_active', 'true');
         
         // Preserve all user data - only clear truly temporary items
         const keys = Object.keys(localStorage);
@@ -297,6 +235,11 @@ function AppRoutes() {
           clearTimeout(backgroundTimer);
           backgroundTimer = null;
         }
+        // Re-apply theme-color on resume: visibilitychange is the one event
+        // iOS reliably fires when a standalone PWA comes back to the
+        // foreground (unlike 'focus'), so this is what actually corrects a
+        // status bar left in the wrong color while backgrounded.
+        applyThemeColor();
       }
     };
 
@@ -324,6 +267,7 @@ function AppRoutes() {
       // If page was restored from cache, this is definitely a warm start
       if (event.persisted) {
         localStorage.setItem('app_session_active', 'true');
+        applyThemeColor();
       }
     };
 
@@ -346,32 +290,21 @@ function AppRoutes() {
 
 
 
-  // Theme restoration helper - always keep theme-color as the app colour
-  // The splash screen background is already blue via CSS, theme-color must stay
-  // #126987 so the iOS 26 Liquid Glass status bar never gets stuck on blue
-  const restoreThemeForCurrentScreen = () => {
-    const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeColorMeta) themeColorMeta.setAttribute('content', '#126987');
-  };
-
-
-
   // Listen for splash completion and mark it properly
   useEffect(() => {
     const handleSplashComplete = () => {
       setSplashTransitioning(true);
       // Mark splash as completed in localStorage for proper state tracking
       localStorage.setItem('splash_completed', 'true');
-      
+
       // Small delay to prevent flash, then complete transition
       setTimeout(() => {
         setSplashShown(true);
         setSplashTransitioning(false);
       }, 100);
-      
+
       // Restore theme-color after splash
-      const themeColorMeta = document.querySelector('meta[name="theme-color"]');
-      if (themeColorMeta) themeColorMeta.setAttribute('content', '#126987');
+      applyThemeColor();
     };
 
     window.addEventListener('splashComplete', handleSplashComplete);
@@ -381,7 +314,7 @@ function AppRoutes() {
   // Focus event handling for theme restoration
   useEffect(() => {
     const handleFocusRestore = () => {
-      restoreThemeForCurrentScreen();
+      applyThemeColor();
       // Ensure layout is correctly calculated after focus
       window.dispatchEvent(new Event('resize'));
     };
@@ -390,21 +323,25 @@ function AppRoutes() {
     return () => window.removeEventListener('focus', handleFocusRestore);
   }, [location]);
 
-  // Flush any pending balance syncs when connectivity is restored
+  // Flush any pending balance/transaction syncs when connectivity is restored
   useEffect(() => {
     const handleOnline = () => {
-      console.log('🌐 Connectivity restored - syncing pending balances...');
+      console.log('🌐 Connectivity restored - syncing pending balances and transactions...');
       flushPendingBalanceSyncs();
+      flushPendingTransactionSyncs();
     };
     window.addEventListener('online', handleOnline);
     // Also try on mount in case we're back online after a reconnect
-    if (navigator.onLine) flushPendingBalanceSyncs();
+    if (navigator.onLine) {
+      flushPendingBalanceSyncs();
+      flushPendingTransactionSyncs();
+    }
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
   // Keep theme-color in sync with route
   useEffect(() => {
-    restoreThemeForCurrentScreen();
+    applyThemeColor();
   }, [location]);
 
   // Prevent flash during initialization
@@ -428,20 +365,16 @@ function AppRoutes() {
               {(() => {
                 const appSessionActive = localStorage.getItem('app_session_active');
                 const splashCompleted = localStorage.getItem('splash_completed');
-                const coldStartActive = localStorage.getItem('cold_start_active');
-                
+
                 if (!appSessionActive || (!splashShown && !splashCompleted)) {
                   return <Splash />;
                 }
-                
-                if (coldStartActive) {
-                  return <Login />;
-                }
-                
-                if (user && splashCompleted) {
-                  return <Redirect to="/dashboard" />;
-                }
-                
+
+                // Always land on the login screen after splash - the user
+                // authenticates explicitly (Face ID hold or PIN) from there.
+                // This never auto-redirects to /dashboard based on a
+                // restored session, since that raced with this same check
+                // and produced a visible dashboard -> login bounce.
                 return <Login />;
               })()}
             </Route>
