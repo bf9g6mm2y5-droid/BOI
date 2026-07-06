@@ -5,7 +5,7 @@ import { loginSchema, transferSchema, type InsertUser } from "@shared/schema";
 import { z } from "zod";
 import { otcService } from "./otcService";
 import { transferSecurityService } from "./security/transferSecurity";
-import { generateChatResponse } from "./openai";
+import { generateChatResponse, type LastTransferInfo } from "./chatResponses";
 import { isDeviceBlocked, addDeviceSession, isDeviceInPanicMode, isCustomerInPanicMode } from "./deviceSessions";
 import { setUserDeviceSession } from "./deviceExclusiveAuth";
 import { addUserSession, removeUserSession, sessionTrackingMiddleware, isSessionValid } from "./sessionManager";
@@ -2802,9 +2802,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Get customer's recent transfer data from request body if available
-      let transferContext = '';
-      
+      // Get customer's recent transfer data from request body if available,
+      // as a plain structured object the local response engine can quote
+      // directly (amount, recipient, bank/IBAN details, reference, etc.)
+      let lastTransferInfo: LastTransferInfo | null = null;
+
       // The client will pass transaction data in the request body
       const requestedTransactionData = req.body.transactionData;
       if (requestedTransactionData && requestedTransactionData.length > 0) {
@@ -2815,71 +2817,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
             return tx.paymentMethod === 'UK Transfer' || tx.paymentMethod === 'SEPA Transfer' || tx.paymentMethod === 'EMAIL Transfer';
           })
           .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        
+
         if (transferTransactions.length > 0) {
           const lastTransfer = transferTransactions[0];
           const transferDate = new Date(lastTransfer.timestamp).toLocaleDateString('en-GB', { timeZone: 'Europe/Dublin' });
           const transferTime = new Date(lastTransfer.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Dublin' });
           const transferAmount = parseFloat(lastTransfer.amount.replace('-', ''));
-          
+
           // Extract recipient name from description
           const recipientMatch = lastTransfer.description.match(/Transfer to (.+)/);
-          const recipientName = recipientMatch ? recipientMatch[1] : 'recipient';
-          
-          // Build transfer-specific context based on transfer type
-          let transferTypeContext = '';
-          let accountDetails = '';
-          
-          if (lastTransfer.paymentMethod === 'UK Transfer') {
-            transferTypeContext = `
-TRANSFER TYPE: UK Transfer (sent to a UK account)
-DELIVERY TIME: Takes up to 24 hours to arrive
-CURRENCY: May include currency conversion if relevant`;
-            accountDetails = `
-Sort Code: ${lastTransfer.recipientSortCode || 'Not available'}
-Account Number: ${lastTransfer.recipientAccountNumber || 'Not available'}`;
-          } else if (lastTransfer.paymentMethod === 'SEPA Transfer') {
-            transferTypeContext = `
-TRANSFER TYPE: SEPA Transfer (European payment)
-DELIVERY TIME: Takes 1 business day to arrive
-CURRENCY: Do NOT mention currency conversion - SEPA transfers are EUR to EUR`;
-            accountDetails = `
-IBAN: ${lastTransfer.iban || 'Not available'}
-BIC Code: ${lastTransfer.bicCode || 'Not available'}
-Unique Reference: ${lastTransfer.reference || 'Not specified'}`;
-          } else if (lastTransfer.paymentMethod === 'EMAIL Transfer') {
-            transferTypeContext = `
-TRANSFER TYPE: Email Transfer (sent via email notification)
-DELIVERY TIME: Recipient receives notification immediately, funds available within 24 hours
-CURRENCY: Standard currency transfer`;
-            accountDetails = `
-Recipient Name: ${lastTransfer.recipientName || recipientName}
-Recipient Email: ${lastTransfer.recipientEmail || 'Not available'}
-Reference: ${lastTransfer.reference || 'Not specified'}`;
-          }
-          
-          // Use user currency for proper display
-          const currencySymbol = userCurrency === 'GBP' ? '£' : '€';
-          
-          transferContext = `\n\nCUSTOMER'S RECENT TRANSFER CONTEXT:
-Last transfer: ${currencySymbol}${transferAmount.toFixed(2)} to ${recipientName} on ${transferDate} at ${transferTime}
-Reference: ${lastTransfer.reference || 'Not specified'}
-Transaction ID: ${lastTransfer.id}
-Status: Confirmed and processed${transferTypeContext}${accountDetails}
+          const recipientName = lastTransfer.recipientName || (recipientMatch ? recipientMatch[1] : 'recipient');
 
-RESPONSE GUIDELINES:
-- For UK Transfers: Mention it was sent to a UK account, include sort code/account number, mention up to 24 hours delivery, can mention currency conversion if relevant
-- For SEPA Transfers: Say it was a SEPA transfer, mention IBAN/BIC/unique reference, say 1 business day delivery, DO NOT mention currency conversion or UK accounts
-- For Email Transfers: Confirm recipient name and email address, mention amount sent, include transaction ID and date/time, mention the recipient will receive email notification
-
-IMPORTANT: When customer asks for payment confirmation or transfer details, follow the response guidelines above and include the relevant account details.`;
-        } else {
-          transferContext = `\n\nCUSTOMER'S RECENT TRANSFER CONTEXT:
-No transfers found yet on your account.`;
+          lastTransferInfo = {
+            id: lastTransfer.id,
+            amount: transferAmount.toFixed(2),
+            recipientName,
+            date: transferDate,
+            time: transferTime,
+            reference: lastTransfer.reference || 'N/A',
+            paymentMethod: lastTransfer.paymentMethod,
+            sortCode: lastTransfer.recipientSortCode || null,
+            accountNumber: lastTransfer.recipientAccountNumber || null,
+            iban: lastTransfer.iban || null,
+            bicCode: lastTransfer.bicCode || null,
+            recipientEmail: lastTransfer.recipientEmail || null,
+          };
         }
       }
-      
-      // Prepare conversation history for OpenAI
+
+      // Prepare conversation history for the response engine
       const messages = [
         ...conversationHistory.map(msg => ({
           role: msg.role as 'user' | 'assistant',
@@ -2888,10 +2854,10 @@ No transfers found yet on your account.`;
         { role: 'user' as const, content: message }
       ];
 
-      console.log(`💬 Sending to AI: ${messages.length} messages in history`);
+      console.log(`💬 Generating chat response: ${messages.length} messages in history`);
       console.log(`   Latest message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
 
-      const aiResponse = await generateChatResponse(messages, agentName, transferContext, userCurrency);
+      const aiResponse = await generateChatResponse(messages, agentName, lastTransferInfo, userCurrency);
       
       // Check if user asked for or AI response mentions a confirmation/PDF/proof/document
       let pdfData = null;
