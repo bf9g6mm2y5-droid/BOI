@@ -59,7 +59,7 @@ if ('serviceWorker' in navigator) {
 
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'SW_ACTIVATED') {
-      console.log(`🎉 App updated to v${event.data.version || '4.5.8'}!`);
+      console.log(`🎉 App updated to v${event.data.version || '4.7.0'}!`);
       
       const banner = document.createElement('div');
       banner.style.cssText = `
@@ -79,7 +79,7 @@ if ('serviceWorker' in navigator) {
         text-align: center;
         animation: slideDown 0.3s ease-out;
       `;
-      banner.innerHTML = `✅ App Updated to v${event.data.version || '4.5.8'} - Latest Features Active!`;
+      banner.innerHTML = `✅ App Updated to v${event.data.version || '4.7.0'} - Latest Features Active!`;
       
       const style = document.createElement('style');
       style.textContent = `
