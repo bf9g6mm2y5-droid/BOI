@@ -6,6 +6,7 @@ import { UserDataManager } from "@/utils/userDataManager";
 import { useAuth } from "@/lib/auth";
 import { motion, AnimatePresence } from "framer-motion";
 import { getUserCurrency, formatCurrency, getCurrencySymbol, type Currency } from "@/utils/currencyUtils";
+import { syncBalanceToServer, cancelPendingTransactionSync } from "@/utils/transferUtils";
 import faceIdIconPath from "@assets/IMG_1506_1759859583184.png";
 
 export default function Profile() {
@@ -1691,14 +1692,26 @@ export default function Profile() {
           window.dispatchEvent(new CustomEvent('forceRefresh'));
           showDeveloperMessage('Transaction deleted successfully.');
           return;
+        } else if (response.status === 404) {
+          // Not on the server at all - a local-only transaction (e.g. made
+          // before transactions were synced server-side). Handle it locally.
+          console.log('Transaction not found on server - deleting locally...');
         } else {
-          console.log('Database delete failed, trying local storage...');
+          // The server HAS this transaction but failed to delete it (5xx).
+          // Do NOT delete locally - that would refund the balance while the
+          // transaction still exists server-side, guaranteeing a mismatch.
+          console.error(`Server delete failed with status ${response.status}`);
+          showDeveloperMessage('Could not delete the transaction right now. Please try again.');
+          return;
         }
       } catch (error) {
+        // Network failure/offline - fall through to the local path so the
+        // app keeps working offline; the balance sync below queues until
+        // connectivity returns.
         console.error('Error deleting from database:', error);
       }
     }
-    
+
     // Fall back to local storage deletion (for non-database transactions)
     const storedTransactions = UserDataManager.getUserData('bankTransactions', []) || [];
     
@@ -1737,18 +1750,25 @@ export default function Profile() {
       
       // Save updated accounts to storage
       UserDataManager.setUserData('bankAccounts', updatedAccounts);
-      
+
       // Instantly update local accounts state in admin panel
       setAccounts(updatedAccounts);
-      
-      // Clear cache to ensure fresh data everywhere
-      UserDataManager.clearCache('bankAccounts');
-      UserDataManager.clearCache('bankTransactions');
-      
+
+      // CRITICAL: push the refunded balance to the server (queued if
+      // offline). This local-only delete path previously adjusted the
+      // balance in localStorage but never told the server, so the next
+      // dashboard load pulled the old server balance back - the classic
+      // "balance changes back after I delete a transaction" mismatch.
+      syncBalanceToServer(String(selectedTransaction.accountId), currentBalance.toFixed(2));
+
+      // If this transaction was still queued for server sync, cancel it so
+      // it doesn't get pushed (and reappear) on reconnect
+      cancelPendingTransactionSync(selectedTransaction.id);
+
       // Dispatch comprehensive balance update events for all components
       window.dispatchEvent(new CustomEvent('balanceUpdate', {
-        detail: { 
-          accountId: selectedTransaction.accountId, 
+        detail: {
+          accountId: selectedTransaction.accountId,
           newBalance: currentBalance.toFixed(2),
           accounts: updatedAccounts
         }

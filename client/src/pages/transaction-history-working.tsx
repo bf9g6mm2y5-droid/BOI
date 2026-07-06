@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, ArrowUpRight, CreditCard, Building2, Zap, Ch
 import { motion, AnimatePresence } from "framer-motion";
 import { UserDataManager } from "../utils/userDataManager.ts";
 import { StateManager } from "../utils/stateManager";
-import { getPendingBalanceSyncs } from "../utils/transferUtils";
+import { getPendingBalanceSyncs, syncBalanceToServer, syncTransactionToServer, cancelPendingTransactionSync } from "../utils/transferUtils";
 import { formatCurrency, getUserCurrency, getCurrencySymbol, type Currency } from "../utils/currencyUtils";
 
 interface Account {
@@ -150,13 +150,20 @@ export default function TransactionHistoryWorking() {
     
     const newBalanceString = newBalance.toFixed(2);
     setBalance(newBalanceString);
-    
+
     const accounts = UserDataManager.getUserAccounts();
-    const updatedAccounts = accounts.map((acc: Account) => 
+    const updatedAccounts = accounts.map((acc: Account) =>
       acc.id === accountId ? { ...acc, balance: newBalanceString } : acc
     );
     UserDataManager.setUserData('bankAccounts', updatedAccounts);
-    
+
+    // Persist the deduction and the transaction record to the server
+    // (queued while offline). Bill payments used to live only in
+    // localStorage, so the balance change reverted on the next dashboard
+    // load and the transaction could never be deleted server-side.
+    syncBalanceToServer(String(accountId), newBalanceString);
+    syncTransactionToServer(Number(accountId), newTransaction as any);
+
     const accountTransactions = updatedTransactions.filter(t => t.accountId === accountId);
     setTransactions(accountTransactions);
     
@@ -436,15 +443,41 @@ export default function TransactionHistoryWorking() {
         credentials: 'include'
       });
       
-      if (!response.ok) {
+      let serverNewBalance: string;
+
+      if (response.ok) {
+        const result = await response.json();
+        serverNewBalance = result.newBalance;
+      } else if (response.status === 404) {
+        // Not on the server - a local-only transaction (e.g. created before
+        // transactions were synced server-side). Previously this returned
+        // early and the delete button silently did nothing. Reverse the
+        // amount against the local balance and push that to the server
+        // (queued if offline) so the dashboard doesn't revert it later.
+        const accounts = UserDataManager.getUserAccounts();
+        const affected = accounts.find((acc: Account) => acc.id === accountId);
+        if (!affected) {
+          console.error('Account not found for local transaction delete');
+          return;
+        }
+        const amountNum = parseFloat(String(selectedTransaction.amount).replace('-', '').replace('+', ''));
+        const isDebit = String(selectedTransaction.amount).startsWith('-') || selectedTransaction.type === 'debit';
+        const reversed = isDebit
+          ? parseFloat(affected.balance) + amountNum
+          : parseFloat(affected.balance) - amountNum;
+        serverNewBalance = reversed.toFixed(2);
+        syncBalanceToServer(String(accountId), serverNewBalance);
+        // If this transaction was still queued for server sync, cancel it
+        // so it doesn't get pushed (and reappear) on reconnect
+        cancelPendingTransactionSync(selectedTransaction.id);
+      } else {
+        // Server has the transaction but couldn't delete it - don't touch
+        // local state, or the two sides would disagree.
         console.error('Failed to delete transaction on server');
         return;
       }
-      
-      const result = await response.json();
-      const serverNewBalance = result.newBalance;
-      
-      // Update local state with server-confirmed balance
+
+      // Update local state with the confirmed balance
       setBalance(serverNewBalance);
       
       // Update accounts in localStorage with the server-confirmed balance
@@ -571,10 +604,17 @@ export default function TransactionHistoryWorking() {
           // Get current local storage transactions
           const currentStored = UserDataManager.getUserData('bankTransactions', []) || [];
           const existingTxIds = new Set(currentStored.map((tx: any) => String(tx.id)));
-          
+          // Also dedupe by unique reference - a locally-created transfer
+          // that was synced to the server has a server-assigned id there,
+          // so id-matching alone would re-import it as a "new" transaction
+          const existingRefs = new Set(
+            currentStored.map((tx: any) => tx.reference).filter(Boolean)
+          );
+
           // Find new transactions from database (including internal transfer credits)
-          const newTransactions = dbTransactions.filter((dbTx: any) => 
-            !existingTxIds.has(String(dbTx.id))
+          const newTransactions = dbTransactions.filter((dbTx: any) =>
+            !existingTxIds.has(String(dbTx.id)) &&
+            !(dbTx.reference && existingRefs.has(dbTx.reference))
           );
           
           if (newTransactions.length > 0) {

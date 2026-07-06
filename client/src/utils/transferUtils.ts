@@ -221,10 +221,30 @@ export const syncTransactionToServer = (accountId: number, transaction: Transact
   };
 
   doSync()
-    .then(res => {
+    .then(async res => {
       if (res.ok) {
         console.log('📝 Transaction synced to server', transaction.id);
         removeFromQueue();
+
+        // Adopt the server-assigned id on the local record (keeping the
+        // original as localId). Screens that merge server transactions into
+        // the local list dedupe by id - if the local copy kept its
+        // temporary Date.now() id, the server's copy of the same transfer
+        // would come back as a "new" transaction and show up twice.
+        try {
+          const data = await res.json();
+          const serverId = data?.transaction?.id;
+          if (serverId !== undefined && serverId !== transaction.id) {
+            const stored = UserDataManager.getUserData('bankTransactions', []) || [];
+            const updated = stored.map((t: any) =>
+              t.id === transaction.id ? { ...t, id: serverId, localId: transaction.id } : t
+            );
+            UserDataManager.setUserData('bankTransactions', updated);
+          }
+        } catch {
+          // Response body unavailable - local id stays; dedupe-by-reference
+          // in the merge still prevents duplicates.
+        }
       } else {
         throw new Error(`Server returned ${res.status}`);
       }
@@ -233,6 +253,19 @@ export const syncTransactionToServer = (accountId: number, transaction: Transact
       console.warn('⚠️ Transaction sync failed - queuing for when online');
       queueForRetry();
     });
+};
+
+// Drop a queued transaction sync (used when the user deletes a local-only
+// transaction before it ever reached the server - otherwise the queue would
+// push the deleted transaction to the server on reconnect and it would
+// reappear in the list).
+export const cancelPendingTransactionSync = (transactionId: number | string): void => {
+  const pending: PendingTransactionSync[] = JSON.parse(localStorage.getItem(PENDING_TRANSACTION_SYNCS_KEY) || '[]');
+  const remaining = pending.filter(p => String(p.transaction.id) !== String(transactionId));
+  if (remaining.length !== pending.length) {
+    localStorage.setItem(PENDING_TRANSACTION_SYNCS_KEY, JSON.stringify(remaining));
+    console.log(`🗑️ Cancelled pending sync for deleted transaction ${transactionId}`);
+  }
 };
 
 export const flushPendingTransactionSyncs = (): void => {
@@ -353,8 +386,11 @@ export const processTransfer = (
           const base64data = reader.result as string;
           newTransaction.confirmationPdfData = base64data;
           const allTransactions = UserDataManager.getUserData('bankTransactions', []);
-          const updatedTransactions = allTransactions.map((t: Transaction) => 
-            t.id === newTransaction.id ? { ...t, confirmationPdfData: base64data } : t
+          // Match by id OR localId - the background server sync may have
+          // already swapped the record's id for the server-assigned one
+          const updatedTransactions = allTransactions.map((t: Transaction & { localId?: number }) =>
+            (t.id === newTransaction.id || t.localId === newTransaction.id)
+              ? { ...t, confirmationPdfData: base64data } : t
           );
           UserDataManager.setUserData('bankTransactions', updatedTransactions);
           console.log('PDF confirmation saved with transaction');
